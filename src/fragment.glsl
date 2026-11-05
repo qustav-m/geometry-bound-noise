@@ -22,10 +22,8 @@
 // Mip: sized so one cell ≈ Lminor in UV space (one cell per pixel in the tightest direction).
 // N taps along the major axis, trilinearly blended between two adjacent mip levels.
 
-varying vec2 vBary;
-varying float vEdgeLenAB;
-varying float vEdgeLenAC;
-varying float vTriSeed;
+varying vec2 vMeshUv;      // the geometry's uv attribute, from the vertex shader
+uniform float uSeed;       // per-object seed
 
 uint hash(uint x) {
     x ^= x >> 17u;
@@ -86,7 +84,7 @@ float sampleBilinear(vec2 uv, int size) {
     int iy1 = min(iy + 1, size - 1);
     float tx = fract(uf);
     float ty = fract(vf);
-    uint cellS = hash(uint(round(vTriSeed)) * 1000003u
+    uint cellS = hash(uint(round(uSeed)) * 1000003u
                     ^ uint(int(floor(uv.x))) * 2654435761u
                     ^ uint(int(floor(uv.y))) * 805459861u);
     float n00 = rand(cellS ^ hash(uint(getIndex(ix,  iy,  size)) ^ uint(size)));
@@ -114,13 +112,8 @@ float sampleAniso(vec2 uv, vec2 majorAxisVec, int mip, float Lmajor, float Lmino
     return color;
 }
 
-vec2 initUV() {
-    const float j = 1.0;
-    return vec2(j * vEdgeLenAB * vBary.x, j * vEdgeLenAC * vBary.y);
-}
-
 void main() {
-    vec2 vUv = initUV();
+    vec2 vUv = vMeshUv;
 
     // --- Step 1: build the Jacobian columns ---
     vec2 px = vec2(dFdx(vUv.x), dFdx(vUv.y));
