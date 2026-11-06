@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import vertexSource from './vertex.glsl?raw';
 import fragmentSource from './fragment.glsl?raw';
 import fullscreenVertexSource from './fullscreen-vertex.glsl?raw';
@@ -181,15 +182,122 @@ function createNoiseMaterial(seed: number): THREE.ShaderMaterial {
   });
 }
 
-// Large ground plane: shows grazing angles toward the horizon.
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(50, 50), createNoiseMaterial(1));
-ground.rotation.x = -Math.PI / 2;
-scene.add(ground);
+/*
+Inside corner of a cube: three of its six sides --> bottom, back and left
+--> the cube has the edge length CUBE_SIZE (4 times the object height of 2, so the object fits nicely)
+--> it spans x and z from -CUBE_SIZE/2 to +CUBE_SIZE/2 and y from 0 to CUBE_SIZE
+--> every side faces into the cube, so they are only visible from the inside
+*/
+const CUBE_SIZE = 8;
+const cubeCorner = new THREE.Group();
+scene.add(cubeCorner);
+
+function addCubeSide(seed: number): THREE.Mesh {
+  const side = new THREE.Mesh(new THREE.PlaneGeometry(CUBE_SIZE, CUBE_SIZE), createNoiseMaterial(seed));
+  cubeCorner.add(side);
+  return side;
+}
+
+const cubeBottom = addCubeSide(1);
+cubeBottom.rotation.x = -Math.PI / 2;//faces +y, up
+
+const cubeBack = addCubeSide(3);
+cubeBack.position.set(0, CUBE_SIZE / 2, -CUBE_SIZE / 2);//faces +z, towards the camera
+
+const cubeLeft = addCubeSide(4);
+cubeLeft.rotation.y = Math.PI / 2;//faces +x, to the right
+cubeLeft.position.set(-CUBE_SIZE / 2, CUBE_SIZE / 2, 0);
 
 // Sphere: shows the UV seam and the poles.
 const sphere = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 32), createNoiseMaterial(2));
 sphere.position.set(0, 1, 0);
 scene.add(sphere);
+
+//glTF upload --> the loaded model replaces the sphere (or the previously loaded model)
+//--> .glb works fully, .gltf only if buffers and textures are embedded (a single file can't load separate .bin/images)
+const SPHERE_HEIGHT = 2;
+const gltfLoader = new GLTFLoader();
+let currentModel: THREE.Object3D = sphere;
+
+const modelInput = document.createElement('input');
+modelInput.type = 'file';
+modelInput.accept = '.glb,.gltf';
+modelInput.style.cssText = 'font:12px monospace;color:#fff';
+
+const modelStatus = document.createElement('span');
+
+resolutionPanel.appendChild(modelInput);
+resolutionPanel.appendChild(modelStatus);
+
+//Every mesh gets the noise material with its own seed --> the model's own materials and textures are ignored
+//--> returns false if a mesh has no uv attribute, the noise can't work there
+function applyNoiseMaterials(model: THREE.Object3D): boolean {
+  let seed = 10;
+  let allHaveUvs = true;
+  model.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    if (!mesh.geometry.getAttribute('uv')) allHaveUvs = false;
+    mesh.material = createNoiseMaterial(seed);
+    seed++;
+  });
+  return allHaveUvs;
+}
+
+//Scale the model so the height of its bounding box is `targetHeight`, then stand it on the ground in the middle
+function fitModelToHeight(model: THREE.Object3D, targetHeight: number): void {
+  const box = new THREE.Box3().setFromObject(model);
+  const size = box.getSize(new THREE.Vector3());
+  const largestSide = Math.max(size.x, size.y, size.z);
+  const height = size.y > 0 ? size.y : largestSide;//flat model --> use its largest side instead
+  if (height > 0) model.scale.multiplyScalar(targetHeight / height);
+
+  model.updateMatrixWorld(true);
+  box.setFromObject(model);
+  const center = box.getCenter(new THREE.Vector3());
+  model.position.x -= center.x;
+  model.position.z -= center.z;
+  model.position.y -= box.min.y;//bottom of the model --> on the ground (y = 0)
+}
+
+//Free GPU memory of the replaced model --> not for the sphere, it stays reusable
+function disposeModel(model: THREE.Object3D): void {
+  if (model === sphere) return;
+  model.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.geometry.dispose();
+    (mesh.material as THREE.Material).dispose();
+  });
+}
+
+modelInput.addEventListener('change', async () => {
+  const file = modelInput.files?.[0];
+  if (!file) return;
+  modelStatus.textContent = 'loading…';
+
+  const buffer = await file.arrayBuffer();
+  gltfLoader.parse(
+    buffer,
+    '',
+    (gltf) => {
+      const model = gltf.scene;
+      const allHaveUvs = applyNoiseMaterials(model);
+      fitModelToHeight(model, SPHERE_HEIGHT);
+
+      scene.remove(currentModel);
+      disposeModel(currentModel);
+      scene.add(model);
+      currentModel = model;
+
+      modelStatus.textContent = allHaveUvs ? file.name : `${file.name} (warning: mesh without UVs)`;
+    },
+    (error) => {
+      modelStatus.textContent = `could not load ${file.name}`;
+      console.error(error);
+    },
+  );
+});
 
 //Window resize --> resolution follows the window, the slider scale stays the same
 window.addEventListener('resize', updateRenderResolution);
