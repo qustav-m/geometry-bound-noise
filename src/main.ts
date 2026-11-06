@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import vertexSource from './vertex.glsl?raw';
 import fragmentSource from './fragment.glsl?raw';
 import fullscreenVertexSource from './fullscreen-vertex.glsl?raw';
-import blurFragmentSource from './blur.glsl?raw';
+import blurFragmentSource from './my-blur.glsl?raw';
 
 // No MSAA, so what you see is the shader's own filtering.
 const renderer = new THREE.WebGLRenderer({ antialias: false });
