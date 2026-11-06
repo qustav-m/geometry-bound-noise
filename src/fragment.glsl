@@ -58,14 +58,20 @@ float addToUniformAverage(float avg, float newVal, int newN) {
     return uniformizedMix(avg, newVal, 1.0 / float(newN));
 }
 
-//Side length of big square: every mip grid (2^mip cells per side, up to mip 15) fits into it exactly
-const float SQUARE_SIDE = 32768.0;// 2^15
+//64-bit unsigned number made of two 32-bit halves
+struct Uint64 {
+    uint high;
+    uint low;
+};
+
+//Side length of big square: every mip grid (2^mip cells per side, up to mip 20) fits into it exactly
+//--> mip is clamped to 20 in main: float precision of p ends at 2^-24, so this keeps a safety margin
+const float SQUARE_SIDE = 1048576.0;// 2^20
 
 //Point p = (x*, y*) in [0,1]² --> one index on the big square --> like indices on 2d arrays stored inside 1d array
-uint squareIndex(vec2 p) {
-    uint X = uint(p.x * SQUARE_SIDE);
-    uint Y = uint(p.y * SQUARE_SIDE);
-    return X + Y * (uint(SQUARE_SIDE) + 1u);
+//--> row length is 2^32, so Y is the high half and X the low half
+Uint64 squareIndex(vec2 p) {
+    return Uint64(uint(p.y * SQUARE_SIDE), uint(p.x * SQUARE_SIDE));
 }
 
 /*
@@ -81,8 +87,9 @@ vec2 cellOriginCorner(vec2 p, int mip) {
 }
 
 //Index --> random value in [0,1].
-float cornerValue(uint index, uint seed) {
-    return rand(seed ^ hash(index));
+//--> high half is hashed first, then mixed with the low half and hashed again
+float cornerValue(Uint64 index, uint seed) {
+    return rand(seed ^ hash(index.low ^ hash(index.high)));
 }
 
 //Seed per object and per UV tile (with 0..1 UVs this is just the object seed)
@@ -172,7 +179,7 @@ void main() {
     // We sample two integer levels (coarse and fine) and blend between them
     // with the fractional part, giving smooth transitions as the camera moves.
     float mipOffset = 0.0; // slight bias toward finer mip reduces flicker
-    float mip = clamp(log2(1.0 / max(Lminor, 0.000001)) + mipOffset, -0.999999, 14.0);
+    float mip = clamp(log2(1.0 / max(Lminor, 0.000001)) + mipOffset, -0.999999, 19.0);
 
     int mipCoarse = int(ceil(mip));   // next integer above mip (fewer cells)
     int mipFine   = mipCoarse + 1;    // one level finer (more cells)
