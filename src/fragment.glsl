@@ -106,7 +106,8 @@ float sampleBilinear(vec2 uv, int mip) {
     vec2 t = fract(p * exp2(float(mip)));     //position inside the cell, 0..1
 
     //Seed needs to use uv in case uv goes outside of bounds of 0..1, e.g. edge samples
-    uint seed = tileSeed(uv);
+    //--> level is mixed in so every mip level has independent values (uniformizedMix assumes independent inputs)
+    uint seed = tileSeed(uv) ^ hash(uint(mip));
 
     vec2  corner = cellOriginCorner(p, mip);
     float cellWidth = exp2(-float(mip));//width of one cell: 1 / 2^mip
