@@ -1,12 +1,14 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import vertexSource from './vertex.glsl?raw';
 import fragmentSource from './fragment.glsl?raw';
 import fullscreenVertexSource from './fullscreen-vertex.glsl?raw';
 import spiralBlurFragmentSource from './spiral-blur.glsl?raw';
 import finalBlurFragmentSource from './final-blur.glsl?raw';
 import combineOctavesFragmentSource from './combine-octaves.glsl?raw';
+import compositeFragmentSource from './composite.glsl?raw';
 
 // No MSAA, so what you see is the shader's own filtering.
 const renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -91,6 +93,32 @@ const combineMaterial = new THREE.ShaderMaterial({
   },
 });
 
+/*
+Composite: the noise image and the PBR image are rendered into their own images, composite.glsl combines them
+--> noiseTarget: result of the octave combination (grey value)
+--> pbrTarget: the scene with PBR materials, half float so the linear HDR colors keep their precision
+*/
+const noiseTarget = createTarget(THREE.NearestFilter);
+const pbrTarget = new THREE.WebGLRenderTarget(1, 1, {
+  minFilter: THREE.NearestFilter,
+  magFilter: THREE.NearestFilter,
+  type: THREE.HalfFloatType,
+});
+
+const COMPOSITE_MODES = ['noise', 'PBR', 'combined'];//index = uMode in composite.glsl
+
+const compositeMaterial = new THREE.ShaderMaterial({
+  vertexShader: fullscreenVertexSource,
+  fragmentShader: compositeFragmentSource,
+  uniforms: {
+    tPbr: { value: pbrTarget.texture },
+    tNoise: { value: noiseTarget.texture },
+    uMode: { value: 2 },//starts in the combined mode
+    uTexelSize: { value: new THREE.Vector2(1, 1) },
+    uSearchRadius: { value: 3 },
+  },
+});
+
 //Rectangle over the whole image --> shared by all fullscreen passes, only its material changes per pass
 const fullscreenScene = new THREE.Scene();
 const fullscreenQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), combineMaterial);
@@ -111,6 +139,9 @@ function fitCanvasToWindow(): void {
 
 function applyRenderResolution(): void {
   renderer.setSize(renderWidth, renderHeight, false);//false --> only the pixel size, CSS size is set in fitCanvasToWindow
+  noiseTarget.setSize(renderWidth, renderHeight);
+  pbrTarget.setSize(renderWidth, renderHeight);
+  compositeMaterial.uniforms.uTexelSize.value.set(1 / renderWidth, 1 / renderHeight);
 
   //octave k --> 1/2^k of the render resolution
   octaves.forEach((octave, k) => {
@@ -260,8 +291,24 @@ const CUBE_SIZE = 8;
 const cubeCorner = new THREE.Group();
 scene.add(cubeCorner);
 
+/*
+PBR mode: every mesh keeps two materials in userData and switches between them
+--> noiseMaterial: the noise shader, rendered through the octave and blur pipeline
+--> pbrMaterial: a regular three.js PBR material, rendered directly to the canvas
+*/
+function rememberMaterials(mesh: THREE.Mesh, pbrMaterial: THREE.Material | THREE.Material[]): void {
+  mesh.userData.noiseMaterial = mesh.material;
+  mesh.userData.pbrMaterial = pbrMaterial;
+}
+
+//Plain grey PBR material for the cube sides and the sphere --> they have no material of their own
+function createGreyPbrMaterial(): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({ color: 0x8c8c8c, roughness: 0.9 });
+}
+
 function addCubeSide(seed: number): THREE.Mesh {
   const side = new THREE.Mesh(new THREE.PlaneGeometry(CUBE_SIZE, CUBE_SIZE), createNoiseMaterial(seed));
+  rememberMaterials(side, createGreyPbrMaterial());
   cubeCorner.add(side);
   return side;
 }
@@ -279,6 +326,7 @@ cubeLeft.position.set(-CUBE_SIZE / 2, CUBE_SIZE / 2, 0);
 // Sphere: shows the UV seam and the poles.
 const sphere = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 32), createNoiseMaterial(2));
 sphere.position.set(0, 1, 0);
+rememberMaterials(sphere, createGreyPbrMaterial());
 //Pivot in the middle of the room --> the current model hangs in it, rotating the pivot spins the model around its center
 const modelPivot = new THREE.Group();
 scene.add(modelPivot);
@@ -300,7 +348,7 @@ const modelStatus = document.createElement('span');
 resolutionPanel.appendChild(modelInput);
 resolutionPanel.appendChild(modelStatus);
 
-//Every mesh gets the noise material with its own seed --> the model's own materials and textures are ignored
+//Every mesh gets the noise material with its own seed --> the model's own material is kept for the PBR mode
 //--> returns false if a mesh has no uv attribute, the noise can't work there
 function applyNoiseMaterials(model: THREE.Object3D): boolean {
   let seed = 10;
@@ -309,7 +357,9 @@ function applyNoiseMaterials(model: THREE.Object3D): boolean {
     const mesh = object as THREE.Mesh;
     if (!mesh.isMesh) return;
     if (!mesh.geometry.getAttribute('uv')) allHaveUvs = false;
+    const originalMaterial = mesh.material;
     mesh.material = createNoiseMaterial(seed);
+    rememberMaterials(mesh, originalMaterial);
     seed++;
   });
   return allHaveUvs;
@@ -338,7 +388,8 @@ function disposeModel(model: THREE.Object3D): void {
     const mesh = object as THREE.Mesh;
     if (!mesh.isMesh) return;
     mesh.geometry.dispose();
-    (mesh.material as THREE.Material).dispose();
+    const materials = [mesh.userData.noiseMaterial, mesh.userData.pbrMaterial].flat() as THREE.Material[];
+    for (const material of materials) material.dispose();
   });
 }
 
@@ -411,6 +462,87 @@ function updateModelRotation(): void {
   if (rotateCheckbox.checked) modelPivot.rotation.y += (2 * Math.PI * seconds) / ROTATION_PERIOD;
 }
 
+//PBR lighting --> RoomEnvironment, a neutral built-in studio environment (no HDR file needed)
+//--> tone mapping and sRGB conversion happen in composite.glsl, not in three.js
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+
+//Switch every mesh to its PBR or its noise material --> needed per render, because the combined mode renders both
+function useMaterials(usePbr: boolean): void {
+  scene.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.userData.pbrMaterial) return;
+    mesh.material = usePbr ? mesh.userData.pbrMaterial : mesh.userData.noiseMaterial;
+  });
+}
+
+//Mode switch --> noise only, PBR only or both combined in composite.glsl
+const modeSelect = document.createElement('select');
+modeSelect.style.cssText = 'font:12px monospace';
+COMPOSITE_MODES.forEach((mode, index) => modeSelect.add(new Option(mode, String(index))));
+modeSelect.value = String(compositeMaterial.uniforms.uMode.value);//dropdown shows the start mode
+resolutionPanel.appendChild(modeSelect);
+
+modeSelect.addEventListener('change', () => {
+  compositeMaterial.uniforms.uMode.value = Number(modeSelect.value);
+});
+
+//Search radius slider --> radius of the round kernel in which the combined mode looks for the noise max/min
+const searchSlider = document.createElement('input');
+searchSlider.type = 'range';
+searchSlider.min = '0';
+searchSlider.max = '10';
+searchSlider.step = '1';
+searchSlider.value = '3';
+searchSlider.style.width = '80px';
+
+const searchLabel = document.createElement('span');
+
+resolutionPanel.appendChild(searchSlider);
+resolutionPanel.appendChild(searchLabel);
+
+function updateSearchRadius(): void {
+  compositeMaterial.uniforms.uSearchRadius.value = Number(searchSlider.value);
+  searchLabel.textContent = `search r = ${searchSlider.value}`;
+}
+
+searchSlider.addEventListener('input', updateSearchRadius);
+updateSearchRadius();
+
+//Noise pipeline: every octave at its own resolution, then the octave combination --> noiseTarget
+function renderNoise(): void {
+  useMaterials(false);
+
+  for (let k = 0; k < octaveCount; k++) {
+    const octave = octaves[k];
+
+    //scene --> off-screen image
+    renderer.setRenderTarget(octave.sceneTarget);
+    renderer.render(scene, camera);
+
+    //scene image --> spiral blur --> second off-screen image
+    fullscreenQuad.material = octave.spiralBlurMaterial;
+    renderer.setRenderTarget(octave.spiralBlurTarget);
+    renderer.render(fullscreenScene, fullscreenCamera);
+
+    //spiral blurred image --> final blur --> result image of this octave
+    fullscreenQuad.material = octave.finalBlurMaterial;
+    renderer.setRenderTarget(octave.resultTarget);
+    renderer.render(fullscreenScene, fullscreenCamera);
+  }
+
+  //all octave results --> bilinear upscaling and combination --> noise image
+  fullscreenQuad.material = combineMaterial;
+  renderer.setRenderTarget(noiseTarget);
+  renderer.render(fullscreenScene, fullscreenCamera);
+}
+
+//PBR: the scene with its PBR materials --> pbrTarget (linear colors)
+function renderPbr(): void {
+  useMaterials(true);
+  renderer.setRenderTarget(pbrTarget);
+  renderer.render(scene, camera);
+}
+
 //FPS display in the panel --> averaged over ~0.5 s, capped by the display's refresh rate (e.g. 60 or 120)
 const fpsLabel = document.createElement('span');
 resolutionPanel.appendChild(fpsLabel);
@@ -436,27 +568,13 @@ renderer.setAnimationLoop(() => {
   updateModelRotation();
   controls.update();//needed every frame for damping
 
-  //every octave: the whole pipeline at its own resolution
-  for (let k = 0; k < octaveCount; k++) {
-    const octave = octaves[k];
+  //only render what the current mode needs --> 0 = noise, 1 = PBR, 2 = both
+  const mode = Number(modeSelect.value);
+  if (mode !== 1) renderNoise();
+  if (mode !== 0) renderPbr();
 
-    //scene --> off-screen image
-    renderer.setRenderTarget(octave.sceneTarget);
-    renderer.render(scene, camera);
-
-    //scene image --> spiral blur --> second off-screen image
-    fullscreenQuad.material = octave.spiralBlurMaterial;
-    renderer.setRenderTarget(octave.spiralBlurTarget);
-    renderer.render(fullscreenScene, fullscreenCamera);
-
-    //spiral blurred image --> final blur --> result image of this octave
-    fullscreenQuad.material = octave.finalBlurMaterial;
-    renderer.setRenderTarget(octave.resultTarget);
-    renderer.render(fullscreenScene, fullscreenCamera);
-  }
-
-  //all octave results --> bilinear upscaling and average --> canvas
-  fullscreenQuad.material = combineMaterial;
+  //noise image + PBR image --> composite.glsl --> canvas
+  fullscreenQuad.material = compositeMaterial;
   renderer.setRenderTarget(null);
   renderer.render(fullscreenScene, fullscreenCamera);
 });
