@@ -115,7 +115,7 @@ const compositeMaterial = new THREE.ShaderMaterial({
     tNoise: { value: noiseTarget.texture },
     uMode: { value: 2 },//starts in the combined mode
     uTexelSize: { value: new THREE.Vector2(1, 1) },
-    uSearchRadius: { value: 3 },
+    uSearchRadius: { value: 6 },
   },
 });
 
@@ -492,7 +492,7 @@ searchSlider.type = 'range';
 searchSlider.min = '0';
 searchSlider.max = '10';
 searchSlider.step = '1';
-searchSlider.value = '3';
+searchSlider.value = '6';
 searchSlider.style.width = '80px';
 
 const searchLabel = document.createElement('span');

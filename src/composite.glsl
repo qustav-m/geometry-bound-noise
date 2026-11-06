@@ -27,32 +27,6 @@ vec3 pbrAt(vec2 uv) {
     return linearToSrgb(toneMapAces(texture(tPbr, uv).rgb));
 }
 
-/*
-Combination of both images
---> noise > 0.5: search a round kernel around the pixel for the position with the highest noise value
---> noise <= 0.5: search it for the position with the lowest noise value
---> return the PBR color at that position
-*/
-vec3 combine(vec2 uv, float noise) {
-    bool searchMax = noise > 0.5;
-    float bestNoise = noise;
-    vec2 bestUv = uv;//ties keep the pixel itself
-
-    for (int y = -uSearchRadius; y <= uSearchRadius; y++) {
-        for (int x = -uSearchRadius; x <= uSearchRadius; x++) {
-            if (x * x + y * y > uSearchRadius * uSearchRadius) continue;//only inside the circle
-            vec2 sampleUv = uv + vec2(x, y) * uTexelSize;
-            float value = texture(tNoise, sampleUv).r;
-            if (searchMax ? value > bestNoise : value < bestNoise) {
-                bestNoise = value;
-                bestUv = sampleUv;
-            }
-        }
-    }
-
-    return pbrAt(bestUv);
-}
-
 //RGB --> HSV (hue, saturation, value), all in 0..1
 vec3 rgbToHsv(vec3 c) {
     vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
@@ -70,19 +44,68 @@ vec3 hsvToRgb(vec3 c) {
     return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
-//Strength of the brightness shift --> 0 = off
-const float BRIGHTNESS_STRENGTH = 0.05;
-
 /*
-Brightness shift on the result of combine()
---> changes the value (HSV V) by (noise - 0.5) * BRIGHTNESS_STRENGTH
---> high noise --> brighter, low noise --> darker, hue and saturation stay the same
+Brightness shift
+--> changes the value (HSV V) by (value - 0.5) * strength
+--> value above 0.5 --> brighter, below 0.5 --> darker, hue and saturation stay the same
+--> negative strength turns the direction around
 */
-vec3 brightnessShift(vec3 color, float noise) {
+vec3 brightnessShift(vec3 color, float value, float strength) {
     vec3 hsv = rgbToHsv(color);
-    hsv.z = clamp(hsv.z + (noise - 0.5) * BRIGHTNESS_STRENGTH, 0.0, 1.0);
+    hsv.z = clamp(hsv.z + (value - 0.5) * strength, 0.0, 1.0);
     return hsvToRgb(hsv);
 }
+
+//Strength of the splat shading --> 0 = off, negative = the other direction
+const float SPLAT_SHADE_STRENGTH = 0.03;
+
+/*
+Shading of a splat
+--> color: the PBR color taken from the splat position
+--> distanceRatio: distance between the pixel and the splat position, relative to the kernel radius
+    0 = the pixel itself, 1 = edge of the kernel
+--> brightness shift by the distance: close to the splat position darker, far away brighter (flip with the sign)
+*/
+vec3 splatShade(vec3 color, float distanceRatio) {
+    return brightnessShift(color, 1.0 - distanceRatio, SPLAT_SHADE_STRENGTH);
+}
+
+/*
+Combination of both images
+--> noise > 0.5: search a round kernel around the pixel for the position with the highest noise value
+--> noise <= 0.5: search it for the position with the lowest noise value
+--> return the PBR color at that position, shaded by its distance (see splatShade)
+*/
+vec3 combine(vec2 uv, float noise) {
+    bool searchMax = noise > 0.5;
+    float bestNoise = noise;
+    vec2 bestUv = uv;//ties keep the pixel itself
+    vec2 bestOffset = vec2(0.0);//offset of the best position in pixels
+
+    //search radius scaled by the noise --> noise 1 = full slider radius, noise 0 = only the pixel itself
+    int radius = int(round(float(uSearchRadius) * noise));
+
+    for (int y = -radius; y <= radius; y++) {
+        for (int x = -radius; x <= radius; x++) {
+            if (x * x + y * y > radius * radius) continue;//only inside the circle
+            vec2 sampleUv = uv + vec2(x, y) * uTexelSize;
+            float value = texture(tNoise, sampleUv).r;
+            if (searchMax ? value > bestNoise : value < bestNoise) {
+                bestNoise = value;
+                bestUv = sampleUv;
+                bestOffset = vec2(x, y);
+            }
+        }
+    }
+
+    //distance to the splat position relative to the kernel radius --> 0..1 (radius 0 --> always 0)
+    float distanceRatio = radius > 0 ? length(bestOffset) / float(radius) : 0.0;
+
+    return splatShade(pbrAt(bestUv), distanceRatio);
+}
+
+//Strength of the brightness shift by the noise on the result of combine() --> 0 = off
+const float BRIGHTNESS_STRENGTH = 0.05;
 
 void main() {
     float noise = texture(tNoise, vScreenUv).r;
@@ -90,7 +113,7 @@ void main() {
     vec3 color;
     if (uMode == 0) color = vec3(noise);
     else if (uMode == 1) color = pbrAt(vScreenUv);
-    else color = brightnessShift(combine(vScreenUv, noise), noise);
+    else color = brightnessShift(combine(vScreenUv, noise), noise, BRIGHTNESS_STRENGTH);
 
     gl_FragColor = vec4(color, 1.0);
 }
