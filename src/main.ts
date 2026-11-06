@@ -127,7 +127,7 @@ spiralBlurSlider.type = 'range';
 spiralBlurSlider.min = '0';
 spiralBlurSlider.max = '50';//cost grows with (2r+1)^2 --> large radii are best combined with a low resolution
 spiralBlurSlider.step = '1';
-spiralBlurSlider.value = '0';
+spiralBlurSlider.value = '3';
 spiralBlurSlider.style.width = '100px';
 
 const spiralBlurLabel = document.createElement('span');
@@ -147,9 +147,9 @@ updateSpiralBlurRadius();
 const finalBlurSlider = document.createElement('input');
 finalBlurSlider.type = 'range';
 finalBlurSlider.min = '0';
-finalBlurSlider.max = '50';//cost grows with (2r+1)^2 --> large radii are best combined with a low resolution
+finalBlurSlider.max = '10';//median by binary search: 8 * (2r+1)^2 reads per pixel
 finalBlurSlider.step = '1';
-finalBlurSlider.value = '0';
+finalBlurSlider.value = '3';
 finalBlurSlider.style.width = '100px';
 
 const finalBlurLabel = document.createElement('span');
@@ -159,7 +159,7 @@ resolutionPanel.appendChild(finalBlurLabel);
 
 function updateFinalBlurRadius(): void {
   finalBlurMaterial.uniforms.uRadius.value = Number(finalBlurSlider.value);
-  finalBlurLabel.textContent = `final blur r =${finalBlurSlider.value}`;
+  finalBlurLabel.textContent = `final blur r = ${finalBlurSlider.value}`;
 }
 
 finalBlurSlider.addEventListener('input', updateFinalBlurRadius);
