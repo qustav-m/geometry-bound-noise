@@ -58,38 +58,10 @@ float addToUniformAverage(float avg, float newVal, int newN) {
     return uniformizedMix(avg, newVal, 1.0 / float(newN));
 }
 
-//64-bit unsigned number made of two 32-bit halves
-struct Uint64 {
-    uint high;
-    uint low;
-};
-
-//Side length of big square: every mip grid (2^mip cells per side, up to mip 20) fits into it exactly
-//--> mip is clamped to 20 in main: float precision of p ends at 2^-24, so this keeps a safety margin
-const float SQUARE_SIDE = 1048576.0;// 2^20
-
-//Point p = (x*, y*) in [0,1]² --> one index on the big square --> like indices on 2d arrays stored inside 1d array
-//--> row length is 2^32, so Y is the high half and X the low half
-Uint64 squareIndex(vec2 p) {
-    return Uint64(uint(p.y * SQUARE_SIDE), uint(p.x * SQUARE_SIDE));
-}
-
-/*
-Round p down onto the grid of level `mip`
---> gives the bottom-left corner of the cell in which p is lying
---> since grid is split into cells with 4 corners respectively,
-    the other cell-corners can be calculated by adding 1/2^mip in different combinations to the origin corner's components
-Results are exact multiples of 1/2^mip, e.g. 1/2, 1/4, 3/4.
-*/
-vec2 cellOriginCorner(vec2 p, int mip) {
-    float cellsPerSide = exp2(float(mip));
-    return floor(p * cellsPerSide) / cellsPerSide;
-}
-
-//Index --> random value in [0,1].
-//--> high half is hashed first, then mixed with the low half and hashed again
-float cornerValue(Uint64 index, uint seed) {
-    return rand(seed ^ hash(index.low ^ hash(index.high)));
+//Cell coordinates (x, y) --> random value in [0,1]
+//--> unique per level is enough, the level is already in the seed
+float cornerValue(uvec2 cell, uint seed) {
+    return rand(seed ^ hash(cell.x ^ hash(cell.y)));
 }
 
 //Seed per object and per UV tile (with 0..1 UVs this is just the object seed)
@@ -102,20 +74,20 @@ uint tileSeed(vec2 uv) {
 
 //Bilinear sample of the noise at level `mip`
 float sampleBilinear(vec2 uv, int mip) {
-    vec2 p = fract(uv);                       //position inside the tile, 0..1
-    vec2 t = fract(p * exp2(float(mip)));     //position inside the cell, 0..1
+    //mip is clamped to 20 in main: float precision of uv ends at 2^-24, so this keeps a safety margin
+    vec2 p = fract(uv) * exp2(float(mip));//position in cells, 0..2^mip
+    vec2 t = fract(p);                    //position inside the cell, 0..1
 
     //Seed needs to use uv in case uv goes outside of bounds of 0..1, e.g. edge samples
     //--> level is mixed in so every mip level has independent values (uniformizedMix assumes independent inputs)
     uint seed = tileSeed(uv) ^ hash(uint(mip));
 
-    vec2  corner = cellOriginCorner(p, mip);
-    float cellWidth = exp2(-float(mip));//width of one cell: 1 / 2^mip
+    uvec2 cell = uvec2(floor(p));//bottom-left corner of the cell, as integer grid coordinates
 
-    float n00 = cornerValue(squareIndex(corner), seed);
-    float n10 = cornerValue(squareIndex(corner + vec2(cellWidth, 0.0)), seed);
-    float n01 = cornerValue(squareIndex(corner + vec2(0.0, cellWidth)), seed);
-    float n11 = cornerValue(squareIndex(corner + vec2(cellWidth, cellWidth)), seed);
+    float n00 = cornerValue(cell, seed);
+    float n10 = cornerValue(cell + uvec2(1u, 0u), seed);
+    float n01 = cornerValue(cell + uvec2(0u, 1u), seed);
+    float n11 = cornerValue(cell + uvec2(1u, 1u), seed);
 
     float bottom = uniformizedMix(n00, n10, t.x);
     float top    = uniformizedMix(n01, n11, t.x);
