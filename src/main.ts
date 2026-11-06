@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import vertexSource from './vertex.glsl?raw';
 import fragmentSource from './fragment.glsl?raw';
+import fullscreenVertexSource from './fullscreen-vertex.glsl?raw';
+import blurFragmentSource from './blur.glsl?raw';
 
 // No MSAA, so what you see is the shader's own filtering.
 const renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -21,6 +23,29 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, renderWidth / renderHeight, 0.01, 1000);
 camera.position.set(0, 2, 6);
 
+//Second pass: the scene is rendered into this off-screen image first, then the blur shader reads from it
+//--> nearest filtering, so the blur reads exact pixel values
+const sceneTarget = new THREE.WebGLRenderTarget(renderWidth, renderHeight, {
+  minFilter: THREE.NearestFilter,
+  magFilter: THREE.NearestFilter,
+});
+
+const blurMaterial = new THREE.ShaderMaterial({
+  vertexShader: fullscreenVertexSource,
+  fragmentShader: blurFragmentSource,
+  uniforms: {
+    tInput: { value: sceneTarget.texture },
+    uTexelSize: { value: new THREE.Vector2(1 / renderWidth, 1 / renderHeight) },
+    uRadius: { value: 0 },
+  },
+});
+
+const blurScene = new THREE.Scene();
+const blurQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), blurMaterial);
+blurQuad.frustumCulled = false;//positions are already in clip space, the camera is not used
+blurScene.add(blurQuad);
+const blurCamera = new THREE.Camera();
+
 //Scale the canvas to fill the window with its aspect ratio preserved --> black bars where it doesn't match
 function fitCanvasToWindow(): void {
   const scale = Math.min(window.innerWidth / renderWidth, window.innerHeight / renderHeight);
@@ -34,6 +59,8 @@ function fitCanvasToWindow(): void {
 
 function applyRenderResolution(): void {
   renderer.setSize(renderWidth, renderHeight, false);//false --> only the pixel size, CSS size is set in fitCanvasToWindow
+  sceneTarget.setSize(renderWidth, renderHeight);
+  blurMaterial.uniforms.uTexelSize.value.set(1 / renderWidth, 1 / renderHeight);
   camera.aspect = renderWidth / renderHeight;
   camera.updateProjectionMatrix();
   fitCanvasToWindow();
@@ -72,6 +99,28 @@ function updateRenderResolution(): void {
 resolutionSlider.addEventListener('input', updateRenderResolution);
 updateRenderResolution();
 
+//Blur radius slider in the same panel --> 0 = no blur
+const blurSlider = document.createElement('input');
+blurSlider.type = 'range';
+blurSlider.min = '0';
+blurSlider.max = '50';//cost grows with (2r+1)^2 --> large radii are best combined with a low resolution
+blurSlider.step = '1';
+blurSlider.value = '0';
+blurSlider.style.width = '100px';
+
+const blurLabel = document.createElement('span');
+
+resolutionPanel.appendChild(blurSlider);
+resolutionPanel.appendChild(blurLabel);
+
+function updateBlurRadius(): void {
+  blurMaterial.uniforms.uRadius.value = Number(blurSlider.value);
+  blurLabel.textContent = `blur r = ${blurSlider.value}`;
+}
+
+blurSlider.addEventListener('input', updateBlurRadius);
+updateBlurRadius();
+
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1, 0);
 controls.enableDamping = true;
@@ -103,5 +152,12 @@ window.addEventListener('resize', updateRenderResolution);
 
 renderer.setAnimationLoop(() => {
   controls.update();//needed every frame for damping
+
+  //pass 1: scene --> off-screen image
+  renderer.setRenderTarget(sceneTarget);
   renderer.render(scene, camera);
+
+  //pass 2: off-screen image --> blur --> canvas
+  renderer.setRenderTarget(null);
+  renderer.render(blurScene, blurCamera);
 });

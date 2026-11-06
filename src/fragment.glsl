@@ -151,11 +151,12 @@ void main() {
     // one cell per screen pixel in the minor direction → mip = log2(1/Lminor).
     // We sample two integer levels (coarse and fine) and blend between them
     // with the fractional part, giving smooth transitions as the camera moves.
-    float mipOffset = 0.0; // slight bias toward finer mip reduces flicker
-    float mip = clamp(log2(1.0 / max(Lminor, 0.000001)) + mipOffset, -0.999999, 19.0);
 
-    int mipCoarse = int(ceil(mip));   // next integer above mip (fewer cells)
-    int mipFine   = mipCoarse + 1;    // one level finer (more cells)
+    float mip = max(0.0, log2(1.0 / max(Lminor, 0.000001)));
+    //--> the max() with 0.000001 automatically causes the upper bound of mip to be log2(1 / 0.000001) = log2(1 000 000) ≈ 19.93 < mip of 20
+
+    int mipCoarse = int(floor(mip));
+    int mipFine   = mipCoarse + 1;
 
     // --- Step 4: sample both mip levels with up to maxAniso taps, then blend ---
     int maxAniso = 8;
