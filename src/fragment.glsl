@@ -38,22 +38,6 @@ float rand(uint seed) {
     return float(hash(seed)) / 4294967295.0;
 }
 
-int getIndex(int x, int y, int s) {
-    int cx = x; int cy = y; int size = s;
-    while (size > 1) {
-        int lastx = cx & 1; int lasty = cy & 1;
-        if (lastx == 1 || lasty == 1) {
-            int halfSize = size >> 1;
-            int base = halfSize * halfSize;
-            int row  = (cy >> 1) * size;
-            int col  = ((cy >> 1) + lasty) * halfSize + (cx >> (1 - lasty));
-            return base + row + col;
-        }
-        cx >>= 1; cy >>= 1; size >>= 1;
-    }
-    return 0;
-}
-
 // CDF of mix(A,B,t) when A and B are uniform [0,1].
 float uniformize(float z, float t) {
     float lo = min(t, 1.0 - t);
@@ -74,40 +58,72 @@ float addToUniformAverage(float avg, float newVal, int newN) {
     return uniformizedMix(avg, newVal, 1.0 / float(newN));
 }
 
-// Bilinear sample on a square size×size grid at the given UV position.
-float sampleBilinear(vec2 uv, int size) {
-    float uf = fract(uv.x) * float(size);
-    float vf = fract(uv.y) * float(size);
-    int ix  = clamp(int(floor(uf)), 0, size - 1);
-    int iy  = clamp(int(floor(vf)), 0, size - 1);
-    int ix1 = min(ix + 1, size - 1);
-    int iy1 = min(iy + 1, size - 1);
-    float tx = fract(uf);
-    float ty = fract(vf);
-    uint cellS = hash(uint(round(uSeed)) * 1000003u
-                    ^ uint(int(floor(uv.x))) * 2654435761u
-                    ^ uint(int(floor(uv.y))) * 805459861u);
-    float n00 = rand(cellS ^ hash(uint(getIndex(ix,  iy,  size)) ^ uint(size)));
-    float n10 = rand(cellS ^ hash(uint(getIndex(ix1, iy,  size)) ^ uint(size)));
-    float n01 = rand(cellS ^ hash(uint(getIndex(ix,  iy1, size)) ^ uint(size)));
-    float n11 = rand(cellS ^ hash(uint(getIndex(ix1, iy1, size)) ^ uint(size)));
-    float row0 = uniformizedMix(n00, n10, tx);
-    float row1 = uniformizedMix(n01, n11, tx);
-    return uniformizedMix(row0, row1, ty);
+//Side length of big square: every mip grid (2^mip cells per side, up to mip 15) fits into it exactly
+const float SQUARE_SIDE = 32768.0;// 2^15
+
+//Point p = (x*, y*) in [0,1]² --> one index on the big square --> like indices on 2d arrays stored inside 1d array
+uint squareIndex(vec2 p) {
+    uint X = uint(p.x * SQUARE_SIDE);
+    uint Y = uint(p.y * SQUARE_SIDE);
+    return X + Y * (uint(SQUARE_SIDE) + 1u);
+}
+
+/*
+Round p down onto the grid of level `mip`
+--> gives the bottom-left corner of the cell in which p is lying
+--> since grid is split into cells with 4 corners respectively,
+    the other cell-corners can be calculated by adding 1/2^mip in different combinations to the origin corner's components
+Results are exact multiples of 1/2^mip, e.g. 1/2, 1/4, 3/4.
+*/
+vec2 cellOriginCorner(vec2 p, int mip) {
+    float cellsPerSide = exp2(float(mip));
+    return floor(p * cellsPerSide) / cellsPerSide;
+}
+
+//Index --> random value in [0,1].
+float cornerValue(uint index, uint seed) {
+    return rand(seed ^ hash(index));
+}
+
+//Seed per object and per UV tile (with 0..1 UVs this is just the object seed)
+uint tileSeed(vec2 uv) {
+    return hash(uint(round(uSeed)) * 1000003u
+            //creates a new tile where uv goes slightly past 0 or 1 (e.g. edge samples)
+              ^ uint(int(floor(uv.x))) * 2654435761u
+              ^ uint(int(floor(uv.y))) * 805459861u);
+}
+
+//Bilinear sample of the noise at level `mip`
+float sampleBilinear(vec2 uv, int mip) {
+    vec2 p = fract(uv);                       //position inside the tile, 0..1
+    vec2 t = fract(p * exp2(float(mip)));     //position inside the cell, 0..1
+
+    //Seed needs to use uv in case uv goes outside of bounds of 0..1, e.g. edge samples
+    uint seed = tileSeed(uv);
+
+    vec2  corner = cellOriginCorner(p, mip);
+    float cellWidth = exp2(-float(mip));//width of one cell: 1 / 2^mip
+
+    float n00 = cornerValue(squareIndex(corner), seed);
+    float n10 = cornerValue(squareIndex(corner + vec2(cellWidth, 0.0)), seed);
+    float n01 = cornerValue(squareIndex(corner + vec2(0.0, cellWidth)), seed);
+    float n11 = cornerValue(squareIndex(corner + vec2(cellWidth, cellWidth)), seed);
+
+    float bottom = uniformizedMix(n00, n10, t.x);
+    float top    = uniformizedMix(n01, n11, t.x);
+    return uniformizedMix(bottom, top, t.y);
 }
 
 float sampleAniso(vec2 uv, vec2 majorAxisVec, int mip, float Lmajor, float Lminor, int maxAniso) {
-    int size = int(exp2(float(mip)));
-
     int N = clamp(int(ceil(Lmajor / max(Lminor, 0.0001))), 1, maxAniso);
 
     vec2 stepVec = majorAxisVec / float(N);
     vec2 start   = uv - stepVec * float(N - 1) * 0.5;
 
-    float color = sampleBilinear(start, size);
+    float color = sampleBilinear(start, mip);
     for (int i = 1; i < maxAniso; i++) {
         if (i >= N) break;
-        color = addToUniformAverage(color, sampleBilinear(start + float(i) * stepVec, size), i + 1);
+        color = addToUniformAverage(color, sampleBilinear(start + float(i) * stepVec, mip), i + 1);
     }
     return color;
 }
@@ -156,7 +172,7 @@ void main() {
     // We sample two integer levels (coarse and fine) and blend between them
     // with the fractional part, giving smooth transitions as the camera moves.
     float mipOffset = 0.0; // slight bias toward finer mip reduces flicker
-    float mip = max(-0.999999, log2(1.0 / max(Lminor, 0.000001)) + mipOffset);
+    float mip = clamp(log2(1.0 / max(Lminor, 0.000001)) + mipOffset, -0.999999, 14.0);
 
     int mipCoarse = int(ceil(mip));   // next integer above mip (fewer cells)
     int mipFine   = mipCoarse + 1;    // one level finer (more cells)
