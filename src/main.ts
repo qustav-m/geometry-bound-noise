@@ -98,7 +98,7 @@ resolutionSlider.step = '0.01';
 resolutionSlider.style.width = '200px';
 
 //Start at a render width of 480 px --> scale relative to the native width, height follows the window's aspect ratio
-const DEFAULT_RENDER_WIDTH = 480;
+const DEFAULT_RENDER_WIDTH = 960;//half of 1920 (Full HD) --> 960 x 540 at 16:9
 const nativeWidth = window.innerWidth * window.devicePixelRatio;
 let resolutionScale = Math.min(1, Math.max(Math.pow(2, -8), DEFAULT_RENDER_WIDTH / nativeWidth));
 resolutionSlider.value = String(Math.log2(resolutionScale));
