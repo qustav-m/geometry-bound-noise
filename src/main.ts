@@ -3,7 +3,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import vertexSource from './vertex.glsl?raw';
 import fragmentSource from './fragment.glsl?raw';
 import fullscreenVertexSource from './fullscreen-vertex.glsl?raw';
-import blurFragmentSource from './my-blur.glsl?raw';
+import spiralBlurFragmentSource from './spiral-blur.glsl?raw';
+import finalBlurFragmentSource from './final-blur.glsl?raw';
 
 // No MSAA, so what you see is the shader's own filtering.
 const renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -25,26 +26,38 @@ camera.position.set(0, 2, 6);
 
 //Second pass: the scene is rendered into this off-screen image first, then the blur shader reads from it
 //--> nearest filtering, so the blur reads exact pixel values
-const sceneTarget = new THREE.WebGLRenderTarget(renderWidth, renderHeight, {
-  minFilter: THREE.NearestFilter,
-  magFilter: THREE.NearestFilter,
-});
+function createPixelTarget(): THREE.WebGLRenderTarget {
+  return new THREE.WebGLRenderTarget(renderWidth, renderHeight, {
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+  });
+}
 
-const blurMaterial = new THREE.ShaderMaterial({
-  vertexShader: fullscreenVertexSource,
-  fragmentShader: blurFragmentSource,
-  uniforms: {
-    tInput: { value: sceneTarget.texture },
-    uTexelSize: { value: new THREE.Vector2(1 / renderWidth, 1 / renderHeight) },
-    uRadius: { value: 0 },
-  },
-});
+//Pass chain: scene --> sceneTarget --spiral blur--> spiralBlurTarget --final blur--> canvas
+const sceneTarget = createPixelTarget();
+const spiralBlurTarget = createPixelTarget();
 
-const blurScene = new THREE.Scene();
-const blurQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), blurMaterial);
-blurQuad.frustumCulled = false;//positions are already in clip space, the camera is not used
-blurScene.add(blurQuad);
-const blurCamera = new THREE.Camera();
+function createBlurMaterial(fragmentShader: string, input: THREE.WebGLRenderTarget): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: fullscreenVertexSource,
+    fragmentShader,
+    uniforms: {
+      tInput: { value: input.texture },
+      uTexelSize: { value: new THREE.Vector2(1 / renderWidth, 1 / renderHeight) },
+      uRadius: { value: 0 },
+    },
+  });
+}
+
+const spiralBlurMaterial = createBlurMaterial(spiralBlurFragmentSource, sceneTarget);
+const finalBlurMaterial = createBlurMaterial(finalBlurFragmentSource, spiralBlurTarget);
+
+//Rectangle over the whole image --> shared by all fullscreen passes, only its material changes per pass
+const fullscreenScene = new THREE.Scene();
+const fullscreenQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), spiralBlurMaterial);
+fullscreenQuad.frustumCulled = false;//positions are already in clip space, the camera is not used
+fullscreenScene.add(fullscreenQuad);
+const fullscreenCamera = new THREE.Camera();
 
 //Scale the canvas to fill the window with its aspect ratio preserved --> black bars where it doesn't match
 function fitCanvasToWindow(): void {
@@ -60,7 +73,9 @@ function fitCanvasToWindow(): void {
 function applyRenderResolution(): void {
   renderer.setSize(renderWidth, renderHeight, false);//false --> only the pixel size, CSS size is set in fitCanvasToWindow
   sceneTarget.setSize(renderWidth, renderHeight);
-  blurMaterial.uniforms.uTexelSize.value.set(1 / renderWidth, 1 / renderHeight);
+  spiralBlurTarget.setSize(renderWidth, renderHeight);
+  spiralBlurMaterial.uniforms.uTexelSize.value.set(1 / renderWidth, 1 / renderHeight);
+  finalBlurMaterial.uniforms.uTexelSize.value.set(1 / renderWidth, 1 / renderHeight);
   camera.aspect = renderWidth / renderHeight;
   camera.updateProjectionMatrix();
   fitCanvasToWindow();
@@ -106,27 +121,49 @@ resolutionSlider.addEventListener('input', () => {
 });
 updateRenderResolution();
 
-//Blur radius slider in the same panel --> 0 = no blur
-const blurSlider = document.createElement('input');
-blurSlider.type = 'range';
-blurSlider.min = '0';
-blurSlider.max = '50';//cost grows with (2r+1)^2 --> large radii are best combined with a low resolution
-blurSlider.step = '1';
-blurSlider.value = '0';
-blurSlider.style.width = '100px';
+//Spiral blur radius slider in the same panel --> 0 = no blur
+const spiralBlurSlider = document.createElement('input');
+spiralBlurSlider.type = 'range';
+spiralBlurSlider.min = '0';
+spiralBlurSlider.max = '50';//cost grows with (2r+1)^2 --> large radii are best combined with a low resolution
+spiralBlurSlider.step = '1';
+spiralBlurSlider.value = '0';
+spiralBlurSlider.style.width = '100px';
 
-const blurLabel = document.createElement('span');
+const spiralBlurLabel = document.createElement('span');
 
-resolutionPanel.appendChild(blurSlider);
-resolutionPanel.appendChild(blurLabel);
+resolutionPanel.appendChild(spiralBlurSlider);
+resolutionPanel.appendChild(spiralBlurLabel);
 
-function updateBlurRadius(): void {
-  blurMaterial.uniforms.uRadius.value = Number(blurSlider.value);
-  blurLabel.textContent = `blur r = ${blurSlider.value}`;
+function updateSpiralBlurRadius(): void {
+  spiralBlurMaterial.uniforms.uRadius.value = Number(spiralBlurSlider.value);
+  spiralBlurLabel.textContent = `spiral blur r = ${spiralBlurSlider.value}`;
 }
 
-blurSlider.addEventListener('input', updateBlurRadius);
-updateBlurRadius();
+spiralBlurSlider.addEventListener('input', updateSpiralBlurRadius);
+updateSpiralBlurRadius();
+
+//Final blur radius slider in the same panel --> 0 = no blur, independent of the spiral blur radius
+const finalBlurSlider = document.createElement('input');
+finalBlurSlider.type = 'range';
+finalBlurSlider.min = '0';
+finalBlurSlider.max = '50';//cost grows with (2r+1)^2 --> large radii are best combined with a low resolution
+finalBlurSlider.step = '1';
+finalBlurSlider.value = '0';
+finalBlurSlider.style.width = '100px';
+
+const finalBlurLabel = document.createElement('span');
+
+resolutionPanel.appendChild(finalBlurSlider);
+resolutionPanel.appendChild(finalBlurLabel);
+
+function updateFinalBlurRadius(): void {
+  finalBlurMaterial.uniforms.uRadius.value = Number(finalBlurSlider.value);
+  finalBlurLabel.textContent = `final blur r =${finalBlurSlider.value}`;
+}
+
+finalBlurSlider.addEventListener('input', updateFinalBlurRadius);
+updateFinalBlurRadius();
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1, 0);
@@ -164,7 +201,13 @@ renderer.setAnimationLoop(() => {
   renderer.setRenderTarget(sceneTarget);
   renderer.render(scene, camera);
 
-  //pass 2: off-screen image --> blur --> canvas
+  //pass 2: scene image --> spiral blur --> second off-screen image
+  fullscreenQuad.material = spiralBlurMaterial;
+  renderer.setRenderTarget(spiralBlurTarget);
+  renderer.render(fullscreenScene, fullscreenCamera);
+
+  //pass 3: spiral blurred image --> final blur --> canvas
+  fullscreenQuad.material = finalBlurMaterial;
   renderer.setRenderTarget(null);
-  renderer.render(blurScene, blurCamera);
+  renderer.render(fullscreenScene, fullscreenCamera);
 });

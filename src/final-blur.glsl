@@ -1,4 +1,4 @@
-//Second pass: kernel filter over the finished image of the first pass
+//Final blur: last pass, kernel filter over the spiral blurred image
 //--> every output pixel is a weighted sum of its neighbours in a (2r+1) x (2r+1) square
 
 varying vec2 vScreenUv;
