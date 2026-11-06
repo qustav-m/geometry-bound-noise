@@ -271,6 +271,24 @@ function disposeModel(model: THREE.Object3D): void {
   });
 }
 
+//Show a loaded model instead of the current one --> noise materials, scaled to the sphere height, on the ground
+function showModel(model: THREE.Object3D, name: string): void {
+  const allHaveUvs = applyNoiseMaterials(model);
+  fitModelToHeight(model, SPHERE_HEIGHT);
+
+  scene.remove(currentModel);
+  disposeModel(currentModel);
+  scene.add(model);
+  currentModel = model;
+
+  modelStatus.textContent = allHaveUvs ? name : `${name} (warning: mesh without UVs)`;
+}
+
+function showLoadError(name: string, error: unknown): void {
+  modelStatus.textContent = `could not load ${name}`;
+  console.error(error);
+}
+
 modelInput.addEventListener('change', async () => {
   const file = modelInput.files?.[0];
   if (!file) return;
@@ -280,24 +298,23 @@ modelInput.addEventListener('change', async () => {
   gltfLoader.parse(
     buffer,
     '',
-    (gltf) => {
-      const model = gltf.scene;
-      const allHaveUvs = applyNoiseMaterials(model);
-      fitModelToHeight(model, SPHERE_HEIGHT);
-
-      scene.remove(currentModel);
-      disposeModel(currentModel);
-      scene.add(model);
-      currentModel = model;
-
-      modelStatus.textContent = allHaveUvs ? file.name : `${file.name} (warning: mesh without UVs)`;
-    },
-    (error) => {
-      modelStatus.textContent = `could not load ${file.name}`;
-      console.error(error);
-    },
+    (gltf) => showModel(gltf.scene, file.name),
+    (error) => showLoadError(file.name, error),
   );
 });
+
+//Default model, loaded at start from public/ --> the sphere stays visible while it loads and if loading fails
+const DEFAULT_MODEL = 'wooden_elephant.glb';
+modelStatus.textContent = `loading ${DEFAULT_MODEL}…`;
+gltfLoader.load(
+  `${import.meta.env.BASE_URL}${DEFAULT_MODEL}`,
+  (gltf) => {
+    if (currentModel !== sphere) return;//a model was uploaded meanwhile --> keep that one
+    showModel(gltf.scene, DEFAULT_MODEL);
+  },
+  undefined,
+  (error) => showLoadError(DEFAULT_MODEL, error),
+);
 
 //Window resize --> resolution follows the window, the slider scale stays the same
 window.addEventListener('resize', updateRenderResolution);
