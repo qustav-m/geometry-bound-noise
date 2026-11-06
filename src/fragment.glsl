@@ -159,7 +159,7 @@ void main() {
     int mipFine   = mipCoarse + 1;
 
     // --- Step 4: sample both mip levels with up to maxAniso taps, then blend ---
-    int maxAniso = 8;
+    int maxAniso = 16;
 
     float colorCoarse = sampleAniso(vUv, majorAxisVec, mipCoarse, Lmajor, Lminor, maxAniso);
     float colorFine   = sampleAniso(vUv, majorAxisVec, mipFine,   Lmajor, Lminor, maxAniso);

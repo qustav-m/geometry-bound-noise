@@ -319,7 +319,28 @@ gltfLoader.load(
 //Window resize --> resolution follows the window, the slider scale stays the same
 window.addEventListener('resize', updateRenderResolution);
 
+//FPS display in the panel --> averaged over ~0.5 s, capped by the display's refresh rate (e.g. 60 or 120)
+const fpsLabel = document.createElement('span');
+resolutionPanel.appendChild(fpsLabel);
+
+const FPS_UPDATE_INTERVAL = 500;//ms
+let fpsFrameCount = 0;
+let fpsIntervalStart = performance.now();
+
+function updateFps(): void {
+  fpsFrameCount++;
+  const now = performance.now();
+  const elapsed = now - fpsIntervalStart;
+  if (elapsed < FPS_UPDATE_INTERVAL) return;
+
+  const fps = (fpsFrameCount * 1000) / elapsed;
+  fpsLabel.textContent = `${fps.toFixed(0)} fps (${(elapsed / fpsFrameCount).toFixed(1)} ms)`;
+  fpsFrameCount = 0;
+  fpsIntervalStart = now;
+}
+
 renderer.setAnimationLoop(() => {
+  updateFps();
   controls.update();//needed every frame for damping
 
   //pass 1: scene --> off-screen image
