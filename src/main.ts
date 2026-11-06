@@ -6,6 +6,7 @@ import fragmentSource from './fragment.glsl?raw';
 import fullscreenVertexSource from './fullscreen-vertex.glsl?raw';
 import spiralBlurFragmentSource from './spiral-blur.glsl?raw';
 import finalBlurFragmentSource from './final-blur.glsl?raw';
+import combineOctavesFragmentSource from './combine-octaves.glsl?raw';
 
 // No MSAA, so what you see is the shader's own filtering.
 const renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -25,18 +26,11 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, renderWidth / renderHeight, 0.01, 1000);
 camera.position.set(0, 2, 6);
 
-//Second pass: the scene is rendered into this off-screen image first, then the blur shader reads from it
-//--> nearest filtering, so the blur reads exact pixel values
-function createPixelTarget(): THREE.WebGLRenderTarget {
-  return new THREE.WebGLRenderTarget(renderWidth, renderHeight, {
-    minFilter: THREE.NearestFilter,
-    magFilter: THREE.NearestFilter,
-  });
+//Off-screen image --> nearest filtering for images the blurs read (exact pixel values),
+//linear filtering for the octave results the combine shader scales up bilinearly
+function createTarget(filter: THREE.MagnificationTextureFilter): THREE.WebGLRenderTarget {
+  return new THREE.WebGLRenderTarget(1, 1, { minFilter: filter, magFilter: filter });
 }
-
-//Pass chain: scene --> sceneTarget --spiral blur--> spiralBlurTarget --final blur--> canvas
-const sceneTarget = createPixelTarget();
-const spiralBlurTarget = createPixelTarget();
 
 function createBlurMaterial(fragmentShader: string, input: THREE.WebGLRenderTarget): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
@@ -44,18 +38,62 @@ function createBlurMaterial(fragmentShader: string, input: THREE.WebGLRenderTarg
     fragmentShader,
     uniforms: {
       tInput: { value: input.texture },
-      uTexelSize: { value: new THREE.Vector2(1 / renderWidth, 1 / renderHeight) },
+      uTexelSize: { value: new THREE.Vector2(1, 1) },
       uRadius: { value: 0 },
     },
   });
 }
 
-const spiralBlurMaterial = createBlurMaterial(spiralBlurFragmentSource, sceneTarget);
-const finalBlurMaterial = createBlurMaterial(finalBlurFragmentSource, spiralBlurTarget);
+/*
+Octaves: the whole pipeline runs once per octave at its own resolution
+--> octave k has 1/2^k of the render resolution, so the mip selection picks 2^k times larger noise cells
+--> chain per octave: scene --> sceneTarget --spiral blur--> spiralBlurTarget --final blur--> resultTarget
+--> afterwards the combine shader averages all result images on the canvas
+*/
+const MAX_OCTAVES = 5;
+
+interface Octave {
+  sceneTarget: THREE.WebGLRenderTarget;
+  spiralBlurTarget: THREE.WebGLRenderTarget;
+  resultTarget: THREE.WebGLRenderTarget;
+  spiralBlurMaterial: THREE.ShaderMaterial;
+  finalBlurMaterial: THREE.ShaderMaterial;
+}
+
+function createOctave(): Octave {
+  const sceneTarget = createTarget(THREE.NearestFilter);
+  const spiralBlurTarget = createTarget(THREE.NearestFilter);
+  const resultTarget = createTarget(THREE.LinearFilter);
+  return {
+    sceneTarget,
+    spiralBlurTarget,
+    resultTarget,
+    spiralBlurMaterial: createBlurMaterial(spiralBlurFragmentSource, sceneTarget),
+    finalBlurMaterial: createBlurMaterial(finalBlurFragmentSource, spiralBlurTarget),
+  };
+}
+
+const octaves: Octave[] = [];
+for (let k = 0; k < MAX_OCTAVES; k++) octaves.push(createOctave());
+
+let octaveCount = 3;
+
+const combineMaterial = new THREE.ShaderMaterial({
+  vertexShader: fullscreenVertexSource,
+  fragmentShader: combineOctavesFragmentSource,
+  uniforms: {
+    tOctave0: { value: octaves[0].resultTarget.texture },
+    tOctave1: { value: octaves[1].resultTarget.texture },
+    tOctave2: { value: octaves[2].resultTarget.texture },
+    tOctave3: { value: octaves[3].resultTarget.texture },
+    tOctave4: { value: octaves[4].resultTarget.texture },
+    uOctaveCount: { value: octaveCount },
+  },
+});
 
 //Rectangle over the whole image --> shared by all fullscreen passes, only its material changes per pass
 const fullscreenScene = new THREE.Scene();
-const fullscreenQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), spiralBlurMaterial);
+const fullscreenQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), combineMaterial);
 fullscreenQuad.frustumCulled = false;//positions are already in clip space, the camera is not used
 fullscreenScene.add(fullscreenQuad);
 const fullscreenCamera = new THREE.Camera();
@@ -73,10 +111,18 @@ function fitCanvasToWindow(): void {
 
 function applyRenderResolution(): void {
   renderer.setSize(renderWidth, renderHeight, false);//false --> only the pixel size, CSS size is set in fitCanvasToWindow
-  sceneTarget.setSize(renderWidth, renderHeight);
-  spiralBlurTarget.setSize(renderWidth, renderHeight);
-  spiralBlurMaterial.uniforms.uTexelSize.value.set(1 / renderWidth, 1 / renderHeight);
-  finalBlurMaterial.uniforms.uTexelSize.value.set(1 / renderWidth, 1 / renderHeight);
+
+  //octave k --> 1/2^k of the render resolution
+  octaves.forEach((octave, k) => {
+    const width = Math.max(1, Math.round(renderWidth / Math.pow(2, k)));
+    const height = Math.max(1, Math.round(renderHeight / Math.pow(2, k)));
+    octave.sceneTarget.setSize(width, height);
+    octave.spiralBlurTarget.setSize(width, height);
+    octave.resultTarget.setSize(width, height);
+    octave.spiralBlurMaterial.uniforms.uTexelSize.value.set(1 / width, 1 / height);
+    octave.finalBlurMaterial.uniforms.uTexelSize.value.set(1 / width, 1 / height);
+  });
+
   camera.aspect = renderWidth / renderHeight;
   camera.updateProjectionMatrix();
   fitCanvasToWindow();
@@ -137,7 +183,7 @@ resolutionPanel.appendChild(spiralBlurSlider);
 resolutionPanel.appendChild(spiralBlurLabel);
 
 function updateSpiralBlurRadius(): void {
-  spiralBlurMaterial.uniforms.uRadius.value = Number(spiralBlurSlider.value);
+  for (const octave of octaves) octave.spiralBlurMaterial.uniforms.uRadius.value = Number(spiralBlurSlider.value);
   spiralBlurLabel.textContent = `spiral blur r = ${spiralBlurSlider.value}`;
 }
 
@@ -159,13 +205,35 @@ resolutionPanel.appendChild(finalBlurSlider);
 resolutionPanel.appendChild(finalBlurLabel);
 
 function updateFinalBlurRadius(): void {
-  finalBlurMaterial.uniforms.uRadius.value = Number(finalBlurSlider.value);
+  for (const octave of octaves) octave.finalBlurMaterial.uniforms.uRadius.value = Number(finalBlurSlider.value);
   finalBlurLabel.textContent = `final blur r = ${finalBlurSlider.value}`;
 }
 
 finalBlurSlider.addEventListener('input', updateFinalBlurRadius);
 updateFinalBlurRadius();
 
+//Octave count slider in the same panel --> 1 = only the full resolution, like without octaves
+const octaveSlider = document.createElement('input');
+octaveSlider.type = 'range';
+octaveSlider.min = '1';
+octaveSlider.max = String(MAX_OCTAVES);
+octaveSlider.step = '1';
+octaveSlider.value = String(octaveCount);
+octaveSlider.style.width = '80px';
+
+const octaveLabel = document.createElement('span');
+
+resolutionPanel.appendChild(octaveSlider);
+resolutionPanel.appendChild(octaveLabel);
+
+function updateOctaveCount(): void {
+  octaveCount = Number(octaveSlider.value);
+  combineMaterial.uniforms.uOctaveCount.value = octaveCount;
+  octaveLabel.textContent = `octaves = ${octaveCount}`;
+}
+
+octaveSlider.addEventListener('input', updateOctaveCount);
+updateOctaveCount();
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1, 0);
 controls.enableDamping = true;
@@ -211,7 +279,10 @@ cubeLeft.position.set(-CUBE_SIZE / 2, CUBE_SIZE / 2, 0);
 // Sphere: shows the UV seam and the poles.
 const sphere = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 32), createNoiseMaterial(2));
 sphere.position.set(0, 1, 0);
-scene.add(sphere);
+//Pivot in the middle of the room --> the current model hangs in it, rotating the pivot spins the model around its center
+const modelPivot = new THREE.Group();
+scene.add(modelPivot);
+modelPivot.add(sphere);
 
 //glTF upload --> the loaded model replaces the sphere (or the previously loaded model)
 //--> .glb works fully, .gltf only if buffers and textures are embedded (a single file can't load separate .bin/images)
@@ -276,9 +347,9 @@ function showModel(model: THREE.Object3D, name: string): void {
   const allHaveUvs = applyNoiseMaterials(model);
   fitModelToHeight(model, SPHERE_HEIGHT);
 
-  scene.remove(currentModel);
+  modelPivot.remove(currentModel);
   disposeModel(currentModel);
-  scene.add(model);
+  modelPivot.add(model);
   currentModel = model;
 
   modelStatus.textContent = allHaveUvs ? name : `${name} (warning: mesh without UVs)`;
@@ -319,6 +390,27 @@ gltfLoader.load(
 //Window resize --> resolution follows the window, the slider scale stays the same
 window.addEventListener('resize', updateRenderResolution);
 
+//Rotate checkbox --> the current model spins around the up axis, one turn in ROTATION_PERIOD seconds
+//--> time based, so the speed doesn't depend on the frame rate
+const ROTATION_PERIOD = 10;//seconds per turn
+
+const rotateLabel = document.createElement('label');
+const rotateCheckbox = document.createElement('input');
+rotateCheckbox.type = 'checkbox';
+rotateCheckbox.checked = false;
+rotateLabel.appendChild(rotateCheckbox);
+rotateLabel.append(' rotate');
+resolutionPanel.appendChild(rotateLabel);
+
+let lastRotationTime = performance.now();
+
+function updateModelRotation(): void {
+  const now = performance.now();
+  const seconds = (now - lastRotationTime) / 1000;
+  lastRotationTime = now;
+  if (rotateCheckbox.checked) modelPivot.rotation.y += (2 * Math.PI * seconds) / ROTATION_PERIOD;
+}
+
 //FPS display in the panel --> averaged over ~0.5 s, capped by the display's refresh rate (e.g. 60 or 120)
 const fpsLabel = document.createElement('span');
 resolutionPanel.appendChild(fpsLabel);
@@ -341,19 +433,30 @@ function updateFps(): void {
 
 renderer.setAnimationLoop(() => {
   updateFps();
+  updateModelRotation();
   controls.update();//needed every frame for damping
 
-  //pass 1: scene --> off-screen image
-  renderer.setRenderTarget(sceneTarget);
-  renderer.render(scene, camera);
+  //every octave: the whole pipeline at its own resolution
+  for (let k = 0; k < octaveCount; k++) {
+    const octave = octaves[k];
 
-  //pass 2: scene image --> spiral blur --> second off-screen image
-  fullscreenQuad.material = spiralBlurMaterial;
-  renderer.setRenderTarget(spiralBlurTarget);
-  renderer.render(fullscreenScene, fullscreenCamera);
+    //scene --> off-screen image
+    renderer.setRenderTarget(octave.sceneTarget);
+    renderer.render(scene, camera);
 
-  //pass 3: spiral blurred image --> final blur --> canvas
-  fullscreenQuad.material = finalBlurMaterial;
+    //scene image --> spiral blur --> second off-screen image
+    fullscreenQuad.material = octave.spiralBlurMaterial;
+    renderer.setRenderTarget(octave.spiralBlurTarget);
+    renderer.render(fullscreenScene, fullscreenCamera);
+
+    //spiral blurred image --> final blur --> result image of this octave
+    fullscreenQuad.material = octave.finalBlurMaterial;
+    renderer.setRenderTarget(octave.resultTarget);
+    renderer.render(fullscreenScene, fullscreenCamera);
+  }
+
+  //all octave results --> bilinear upscaling and average --> canvas
+  fullscreenQuad.material = combineMaterial;
   renderer.setRenderTarget(null);
   renderer.render(fullscreenScene, fullscreenCamera);
 });
