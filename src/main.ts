@@ -80,8 +80,13 @@ resolutionSlider.type = 'range';
 resolutionSlider.min = '-8';
 resolutionSlider.max = '0';
 resolutionSlider.step = '0.01';
-resolutionSlider.value = '0';
 resolutionSlider.style.width = '200px';
+
+//Start at a render width of 480 px --> scale relative to the native width, height follows the window's aspect ratio
+const DEFAULT_RENDER_WIDTH = 480;
+const nativeWidth = window.innerWidth * window.devicePixelRatio;
+let resolutionScale = Math.min(1, Math.max(Math.pow(2, -8), DEFAULT_RENDER_WIDTH / nativeWidth));
+resolutionSlider.value = String(Math.log2(resolutionScale));
 
 const resolutionLabel = document.createElement('span');
 
@@ -89,14 +94,16 @@ resolutionPanel.appendChild(resolutionSlider);
 resolutionPanel.appendChild(resolutionLabel);
 
 function updateRenderResolution(): void {
-  const scale = Math.pow(2, Number(resolutionSlider.value));
-  renderWidth = Math.max(1, Math.round(window.innerWidth * window.devicePixelRatio * scale));
-  renderHeight = Math.max(1, Math.round(window.innerHeight * window.devicePixelRatio * scale));
+  renderWidth = Math.max(1, Math.round(window.innerWidth * window.devicePixelRatio * resolutionScale));
+  renderHeight = Math.max(1, Math.round(window.innerHeight * window.devicePixelRatio * resolutionScale));
   applyRenderResolution();
-  resolutionLabel.textContent = `${renderWidth} × ${renderHeight} (${(scale * 100).toFixed(1)} %)`;
+  resolutionLabel.textContent = `${renderWidth} × ${renderHeight} (${(resolutionScale * 100).toFixed(1)} %)`;
 }
 
-resolutionSlider.addEventListener('input', updateRenderResolution);
+resolutionSlider.addEventListener('input', () => {
+  resolutionScale = Math.pow(2, Number(resolutionSlider.value));
+  updateRenderResolution();
+});
 updateRenderResolution();
 
 //Blur radius slider in the same panel --> 0 = no blur

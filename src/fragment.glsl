@@ -164,7 +164,7 @@ void main() {
     float colorCoarse = sampleAniso(vUv, majorAxisVec, mipCoarse, Lmajor, Lminor, maxAniso);
     float colorFine   = sampleAniso(vUv, majorAxisVec, mipFine,   Lmajor, Lminor, maxAniso);
 
-    // fract(mip) blends from coarse (0) toward fine (1).
+    // fract(mip) blends from coarse (0) toward fine (1)
     float color = uniformizedMix(colorCoarse, colorFine, fract(mip));
 
     gl_FragColor = vec4(vec3(color), 1.0);
