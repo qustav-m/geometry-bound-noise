@@ -16,7 +16,8 @@ camera.position.set(0, 2, 6);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1, 0);
-controls.update();
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;//lower = longer ease-out
 
 // Same shader code for every object; only the seed differs.
 function createNoiseMaterial(seed: number): THREE.ShaderMaterial {
@@ -46,5 +47,6 @@ window.addEventListener('resize', () => {
 });
 
 renderer.setAnimationLoop(() => {
+  controls.update();//needed every frame for damping
   renderer.render(scene, camera);
 });
