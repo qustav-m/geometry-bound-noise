@@ -53,13 +53,44 @@ vec3 combine(vec2 uv, float noise) {
     return pbrAt(bestUv);
 }
 
+//RGB --> HSV (hue, saturation, value), all in 0..1
+vec3 rgbToHsv(vec3 c) {
+    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+//HSV --> RGB, inverse of rgbToHsv
+vec3 hsvToRgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+//Strength of the brightness shift --> 0 = off
+const float BRIGHTNESS_STRENGTH = 0.05;
+
+/*
+Brightness shift on the result of combine()
+--> changes the value (HSV V) by (noise - 0.5) * BRIGHTNESS_STRENGTH
+--> high noise --> brighter, low noise --> darker, hue and saturation stay the same
+*/
+vec3 brightnessShift(vec3 color, float noise) {
+    vec3 hsv = rgbToHsv(color);
+    hsv.z = clamp(hsv.z + (noise - 0.5) * BRIGHTNESS_STRENGTH, 0.0, 1.0);
+    return hsvToRgb(hsv);
+}
+
 void main() {
     float noise = texture(tNoise, vScreenUv).r;
 
     vec3 color;
     if (uMode == 0) color = vec3(noise);
     else if (uMode == 1) color = pbrAt(vScreenUv);
-    else color = combine(vScreenUv, noise);
+    else color = brightnessShift(combine(vScreenUv, noise), noise);
 
     gl_FragColor = vec4(color, 1.0);
 }
